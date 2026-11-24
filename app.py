@@ -34,14 +34,38 @@ async def health_check() -> dict[str, str]:
 @app.post("/triggerMessages")
 async def trigger_messages(
     count: int = Query(default=10_000, ge=1, le=100_000),
+    key_count: int = Query(default=10, ge=1, le=1_000),
 ) -> dict[str, Any]:
     producer: AIOKafkaProducer = app.state.kafka_producer
+    key_partitions: dict[str, set[int]] = {}
     try:
         for index in range(count):
-            # Replace this placeholder payload when the final message schema is defined.
-            message = {"demo_message": {"sequence": index}}
-            await producer.send_and_wait(TOPIC, json.dumps(message).encode("utf-8"))
+            key = f"customer-{index % key_count}"
+            event = {
+                "event_id": f"experiment-1-{index:06d}",
+                "event_type": "partitioning_demo",
+                "entity_id": key,
+                "sequence": index,
+            }
+            metadata = await producer.send_and_wait(
+                TOPIC,
+                json.dumps(event).encode("utf-8"),
+                key=key.encode("utf-8"),
+            )
+            key_partitions.setdefault(key, set()).add(metadata.partition)
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Unable to publish messages to Kafka") from exc
 
-    return {"status": "sent", "count": count, "topic": TOPIC}
+    partition_map = {
+        key: sorted(partitions) for key, partitions in sorted(key_partitions.items())
+    }
+    return {
+        "status": "sent",
+        "count": count,
+        "topic": TOPIC,
+        "key_count": key_count,
+        "key_partitions": partition_map,
+        "same_key_same_partition": all(
+            len(partitions) == 1 for partitions in partition_map.values()
+        ),
+    }
